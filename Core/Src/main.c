@@ -20,7 +20,10 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
+#include "dma.h"
 #include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -49,7 +52,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-float V_value=0,V_set=0;
+uint32_t ADC_Value[10] = {0};
+float duty = 0;
+float V_cur = 0, V_set = 0;
 u8g2_t u8g2;
 //buffer starts
 uint8_t first[14] = {0};
@@ -65,11 +70,11 @@ char sign[2];
 uint8_t line = 1;
 uint8_t model = 1;
 uint8_t state = 1;
-typedef enum{
-    M_input=1,
+typedef enum {
+    M_input = 1,
     M_output
-}Mode;
-int isOutput=0;
+} Mode;
+int isOutput = 0;
 //state表：
 //  输入  1
 //   +    2
@@ -84,13 +89,13 @@ void SystemClock_Config(void);
 
 /* USER CODE BEGIN PFP */
 int UART_printf(UART_HandleTypeDef *huart, const char *fmt, ...);
+
 uint8_t u8x8_stm32_gpio_and_delay(U8X8_UNUSED u8x8_t *u8x8,
                                   U8X8_UNUSED uint8_t msg,
                                   U8X8_UNUSED uint8_t arg_int,
                                   U8X8_UNUSED void *arg_ptr);
 
 uint8_t u8x8_byte_4wire_hw_spi(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
-
 
 
 char *strcat(char *destination, const char *source);
@@ -134,7 +139,7 @@ uint32_t KeyboardScan(void) {
 
 //u8g2相关内容
 
-void frame(u8g2_t *u8g2, uint8_t Vset_buf[], uint8_t Vout_buf[], float Vset, int isOutput);
+void frame(u8g2_t *u8g2, uint8_t Vset_buf[], uint8_t Vout_buf[], float Vset, int model);
 
 void frameutf8(u8g2_t *u8g2, uint8_t first[], uint8_t second[], uint8_t out[]);
 
@@ -348,6 +353,53 @@ int readline(char *line) {
 
     }
 }
+
+#define CLAMP(x, max, min) ((x < max) ? ((x > min) ? x : min) : max)
+typedef struct {
+    float A0;       /**< The derived gain, A0 = Kp + Ki + Kd . */
+    float A1;       /**< The derived gain, A1 = -Kp - 2Kd. */
+    float A2;       /**< The derived gain, A2 = Kd . */
+    float state[3]; /**< The state array of length 3. */
+    float Kp;       /**< The proportional gain. */
+    float Ki;       /**< The integral gain. */
+    float Kd;       /**< The derivative gain. */
+} PID_t;
+
+PID_t pid_o_Vol = {
+        .Kp = 0.02,
+        .Ki = 0.01,
+        .Kd = 0.00};
+
+void pid_init(PID_t *S) {
+    /* Derived coefficient A0 */
+    S->A0 = S->Kp + S->Ki + S->Kd;
+    /* Derived coefficient A1 */
+    S->A1 = (-S->Kp) - ((float) 2.0f * S->Kd);
+    /* Derived coefficient A2 */
+    S->A2 = S->Kd;
+}
+
+float pid_process_o_Vol(PID_t *S, float aim, float current, float out_max, float out_min) {
+    pid_init(S);
+    float out;
+    float in = aim - current;
+    /* u[t] = u[t - 1] + A0 * e[t] + A1 * e[t - 1] + A2 * e[t - 2]  */
+    out = (S->A0 * in) +
+          (S->A1 * S->state[0]) + (S->A2 * S->state[1]) + (S->state[2]);
+    /* Update state */
+    S->state[1] = S->state[0];
+    S->state[0] = in;
+    S->state[2] = out;
+    out = CLAMP(out, out_max, out_min);
+    /* return to application */
+    return (out);
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
+    V_cur = (float) ADC_Value[0] * 3.3f / 4096.0f;
+    duty = pid_process_o_Vol(&pid_o_Vol, V_set, V_cur, 98, 2);
+    TIM2->CCR2 = ((float) (TIM2->ARR + 1)) * duty - 1.0f;
+}
 /* USER CODE END 0 */
 
 /**
@@ -377,13 +429,18 @@ int main(void) {
 
     /* Initialize all configured peripherals */
     MX_GPIO_Init();
+    MX_DMA_Init();
     MX_SPI1_Init();
     MX_USART1_UART_Init();
+    MX_ADC1_Init();
+    MX_TIM2_Init();
     /* USER CODE BEGIN 2 */
     u8g2_Setup_ssd1306_128x64_noname_f(&u8g2, U8G2_R0, u8x8_byte_4wire_hw_spi, u8x8_stm32_gpio_and_delay);
     u8g2_InitDisplay(&u8g2);
     u8g2_SetPowerSave(&u8g2, 0);
-
+    HAL_TIM_Base_Start_IT(&htim2);
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t *) ADC_Value, 1);
     /* USER CODE END 2 */
 
     /* Infinite loop */
@@ -397,33 +454,33 @@ int main(void) {
         int keyboard = getKeyboardIndex();
 
         fsm_stateDirection:
-        if(model==M_input){
-            if(menu[keyboard][0]=='='){
+        if (model == M_input) {
+            if (menu[keyboard][0] == '=') {
                 while (KeyboardScan()) {
 
                 }
-                V_set=str2value_float(first);
-                first[0]=0;
-                model=M_output;
+                V_set = str2value_float(first);
+                first[0] = 0;
+                model = M_output;
                 goto display;
             }
         }
-        if(model==M_output){
-            if(menu[keyboard][0]=='='){
+        if (model == M_output) {
+            if (menu[keyboard][0] == '=') {
                 while (KeyboardScan()) {
 
                 }
-                first[0]=0;
-                model=M_input;
+                first[0] = 0;
+                model = M_input;
                 goto display;
             }
         }
 
         fsm_process:
-        if (model==M_input)
+        if (model == M_input)
             readline(first);
 
-        else if (model==M_output) {
+        else if (model == M_output) {
 
         }
 
@@ -431,10 +488,10 @@ int main(void) {
 
 
         display:
-        UART_printf(&huart1,"V=%f,%f\n",V_set,V_value);
-        char V_value_buf[200];
-        sprintf(V_value_buf,"Vout:%.2fV",V_value);
-        frame(&u8g2, first, V_value_buf, V_set, isOutput);
+        UART_printf(&huart1, "V=%f,%f,%.2f\n", V_set, V_cur, duty);
+        char V_cur_buf[200];
+        sprintf(V_cur_buf, "Vout:%.2fV", V_cur);
+        frame(&u8g2, first, V_cur_buf, V_set, model);
 
 
     }
@@ -487,8 +544,7 @@ void SystemClock_Config(void) {
 #include <stdio.h>
 #include <stdarg.h>
 
-int UART_printf(UART_HandleTypeDef *huart, const char *fmt, ...)
-{
+int UART_printf(UART_HandleTypeDef *huart, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
 
@@ -497,11 +553,12 @@ int UART_printf(UART_HandleTypeDef *huart, const char *fmt, ...)
 
     length = vsnprintf(buffer, 128, fmt, ap);
 
-    HAL_UART_Transmit(huart, (uint8_t *)buffer, length, HAL_MAX_DELAY);
+    HAL_UART_Transmit(huart, (uint8_t *) buffer, length, HAL_MAX_DELAY);
 
     va_end(ap);
     return length;
 }
+
 uint8_t u8x8_stm32_gpio_and_delay(U8X8_UNUSED u8x8_t *u8x8,
                                   U8X8_UNUSED uint8_t msg,
                                   U8X8_UNUSED uint8_t arg_int,
@@ -582,22 +639,31 @@ void frameutf8(u8g2_t *u8g2, uint8_t first[], uint8_t second[], uint8_t out[]) {
     } while (u8g2_NextPage(u8g2));
 }
 
-void frame(u8g2_t *u8g2, uint8_t Vset_buf[], uint8_t Vout_buf[], float Vset, int isOutput) {
-char tmp[200];
-int len= strlen(Vset_buf);
+void frame(u8g2_t *u8g2, uint8_t Vset_buf[], uint8_t Vout_buf[], float Vset, int model) {
+    static int tik_tok = 0;
+    char tmp[200];
+    int len = strlen(Vset_buf);
     u8g2_FirstPage(u8g2);
     do {
         u8g2_SetFont(u8g2, u8g2_font_courR12_tf);
         u8g2_DrawStr(u8g2, 0, 15, "Vset:");
         //Vset
-        sprintf(tmp,"%.2fV",Vset);
+        sprintf(tmp, "%.2fV", Vset);
         u8g2_DrawStr(u8g2, 50, 15, tmp);
         u8g2_DrawStr(u8g2, 0, 30, Vout_buf);
         u8g2_DrawStr(u8g2, 128 - len * 10, 50, Vset_buf);
         //u8g2_DrawStr(u8g2, 0, 50, sign);
-        u8g2_DrawLine(u8g2, 0, 32, 128, 32);
+        if (!tik_tok && model == M_input)
+            //u8g2_DrawLine(u8g2, 0, 32, 128, 32);
+            u8g2_DrawRFrame(u8g2, 0, 32, 128, 23, 3);
 
 
+        static uint32_t tickstart = 0;
+        if ((HAL_GetTick() - tickstart) < 800) {
+        } else {
+            tickstart = HAL_GetTick();
+            tik_tok = !tik_tok;
+        }
     } while (u8g2_NextPage(u8g2));
 }
 
