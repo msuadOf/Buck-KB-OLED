@@ -55,10 +55,11 @@
 
 /* USER CODE BEGIN PV */
 char rx_data[1000];
-float sampleRate=0;
+float sampleRate=11.851f,debug_duty=50;
 volatile config_t config={
         .isConsoleEnable=1,
-        .isPIDPrint=0
+        .isPIDPrint=1,
+        .isDebugPWM=0
 };
 uint32_t ADC_Value[10] = {0};
 float duty = 0;
@@ -373,8 +374,8 @@ typedef struct {
 } PID_t;
 
 volatile PID_t pid_o_Vol = {
-        .Kp = 0.02,
-        .Ki = 0.01,
+        .Kp = 0.5,
+        .Ki = 0.005,
         .Kd = 0.00};
 
 void pid_init(PID_t *S) {
@@ -456,6 +457,11 @@ int cmd_systemctl(char *args){
     if (arg1 == NULL)
     {
         printf("Usage: systemctl enable/disable <func>\n");
+        printf("<func>:\n"
+               "    int isPIDPrint;\n"
+               "    int isConsoleEnable;\n"
+               "    int isDebugPWM;\n"
+        );
         return 0;
     }
     //printf(arg1);
@@ -467,20 +473,42 @@ int cmd_systemctl(char *args){
         printf("Usage: systemctl enable/disable <func>\n");
         return -1;
     }
-    printf("%d",func_en);
+    //printf("func_en=%d\n",func_en);
     char *arg2 = strtok(NULL, " ");
     if (arg2 == NULL)
     {
         printf("Usage: systemctl enable/disable <func>\n");
         return -1;
     }
+
     if(strcmp(arg2,"PIDPrint")==0){
         if(func_en==1){
             config.isPIDPrint=1;
         } else{
             config.isPIDPrint=0;
         }
+        return 0;
     }
+    if(strcmp(arg2,"DebugPWM")==0){
+        if(func_en==1){
+            config.isDebugPWM=1;
+
+            char *arg3 = strtok(NULL, " ");
+            if (arg3 == NULL)
+            {
+
+            } else{
+                debug_duty = atoff(arg3);
+            }
+        } else{
+            config.isDebugPWM=0;
+        }
+        printf("config.isDebugPWM=%s",(config.isDebugPWM)?"true":"false");
+        return 0;
+    }
+
+    printf("arg %s is not found\n",arg2);
+    return -1;
 
 }
 int cmd_setSampleRate(char *args){
@@ -497,8 +525,8 @@ int cmd_setSampleRate(char *args){
 }
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
     V_cur = (float) ADC_Value[0] * 3.3f / 4096.0f *sampleRate;
-    duty = pid_process_o_Vol(&pid_o_Vol, V_set, V_cur, 95, 5);
-    TIM2->CCR2 = ((float) (TIM2->ARR + 1)) * duty - 1.0f;
+    duty = (config.isDebugPWM)?(debug_duty):pid_process_o_Vol(&pid_o_Vol, V_set, V_cur, 95, 1);
+    TIM2->CCR1 = (uint32_t)(((float) (TIM2->ARR + 1)) * duty/100.0f - 1.0f);
 }
 //空闲中断回调函数，参数Size为串口实际接收到数据字节数
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
@@ -606,10 +634,25 @@ int main(void)
 
         display:
         if(config.isPIDPrint) {
-            UART_printf(&huart1, "V=%f,%f,%.2f\n", V_set, V_cur, duty);
+            UART_printf(&huart1, "V:%f,%f,%.2f\n", V_set, V_cur, duty);
         }
         char V_cur_buf[200];
-        sprintf(V_cur_buf, "Vout:%.2fV", V_cur);
+
+        static int tik_tok = 0;
+
+        if(tik_tok){
+            sprintf(V_cur_buf, "Vout:%.2fV", V_cur);
+            tik_tok=0;
+        }
+
+        static uint32_t tickstart = 0;
+        if ((HAL_GetTick() - tickstart) < 500) {
+        } else {
+            tickstart = HAL_GetTick();
+            tik_tok = 1;
+        }
+
+
         frame(&u8g2, first, V_cur_buf, V_set, model);
 
 

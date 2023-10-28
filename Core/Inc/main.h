@@ -35,6 +35,7 @@ extern "C" {
 typedef  struct {
     int isPIDPrint;
     int isConsoleEnable;
+    int isDebugPWM;
 }config_t ;
 
 /* USER CODE END Includes */
