@@ -49,11 +49,11 @@ else ()
     add_compile_options(-Og -g)
 endif ()
 
-include_directories(Core/Inc Drivers/STM32F4xx_HAL_Driver/Inc Drivers/STM32F4xx_HAL_Driver/Inc/Legacy Drivers/CMSIS/Device/ST/STM32F4xx/Include Drivers/CMSIS/Include u8g2-master/)
+include_directories(Core/Inc Drivers/STM32F4xx_HAL_Driver/Inc Drivers/STM32F4xx_HAL_Driver/Inc/Legacy Drivers/CMSIS/Device/ST/STM32F4xx/Include Drivers/CMSIS/Include u8g2-master/ uart_console/)
 
 add_definitions(-DDEBUG -DUSE_HAL_DRIVER -DSTM32F401xC)
 
-file(GLOB_RECURSE SOURCES "Core/*.*" "Drivers/*.*" "u8g2-master/*.*")
+file(GLOB_RECURSE SOURCES "Core/*.*" "Drivers/*.*" "u8g2-master/*.*" "uart_console/*.*")
 
 set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/STM32F401CCUX_FLASH.ld)
 

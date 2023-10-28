@@ -33,6 +33,8 @@
 #include <stdio.h>
 #include<math.h>
 #include <string.h>
+#include <stdlib.h>
+#include "uart_console.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -52,6 +54,12 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+char rx_data[1000];
+float sampleRate=0;
+volatile config_t config={
+        .isConsoleEnable=1,
+        .isPIDPrint=0
+};
 uint32_t ADC_Value[10] = {0};
 float duty = 0;
 float V_cur = 0, V_set = 0;
@@ -86,7 +94,6 @@ int isOutput = 0;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-
 /* USER CODE BEGIN PFP */
 int UART_printf(UART_HandleTypeDef *huart, const char *fmt, ...);
 
@@ -365,7 +372,7 @@ typedef struct {
     float Kd;       /**< The derivative gain. */
 } PID_t;
 
-PID_t pid_o_Vol = {
+volatile PID_t pid_o_Vol = {
         .Kp = 0.02,
         .Ki = 0.01,
         .Kd = 0.00};
@@ -394,11 +401,119 @@ float pid_process_o_Vol(PID_t *S, float aim, float current, float out_max, float
     /* return to application */
     return (out);
 }
+int cmd_setPID(char *args){
+#define  printf(...) UART_printf(&huart1,__VA_ARGS__)
+    // paras
+    char *arg1 = strtok(NULL, " ");
+    if (arg1 == NULL)
+    {
+        printf("Usage: setPID kp ki kd (Vset)\n");
+        return 0;
+    }
+    float kp = atoff(arg1);
 
+    char *arg2 = strtok(NULL, " ");
+    if (arg2 == NULL)
+    {
+        printf("Usage: setPID kp ki kd (Vset)\n");
+        return -1;
+    }
+    float ki = atoff(arg2);
+
+    char *arg3 = strtok(NULL, " ");
+    if (arg3 == NULL)
+    {
+        printf("Usage: setPID kp ki kd (Vset)\n");
+        return -1;
+    }
+
+    float kd = atoff(arg3);
+
+    char *arg4 = strtok(NULL, " ");
+    if (arg4 == NULL)
+    {
+
+    } else{
+
+        float pid_aim = atoff(arg4);
+        V_set=pid_aim;
+    }
+
+
+    pid_o_Vol.Kp=kp;
+    pid_o_Vol.Kd=kd;
+    pid_o_Vol.Ki=ki;
+    printf("PID:kp=%f ki=%f kd=%f V_set=%.2f\n",pid_o_Vol.Kp,pid_o_Vol.Ki,pid_o_Vol.Kd,V_set);
+    // do with addr&N
+
+
+    return 0;
+}
+int cmd_systemctl(char *args){
+    // paras
+    int func_en=1;
+    char *arg1 = strtok(NULL, " ");
+    if (arg1 == NULL)
+    {
+        printf("Usage: systemctl enable/disable <func>\n");
+        return 0;
+    }
+    //printf(arg1);
+    if(strcmp(arg1,"enable")==0){
+        func_en=1;
+    } else if(strcmp(arg1,"disable")==0){
+        func_en=0;
+    } else{
+        printf("Usage: systemctl enable/disable <func>\n");
+        return -1;
+    }
+    printf("%d",func_en);
+    char *arg2 = strtok(NULL, " ");
+    if (arg2 == NULL)
+    {
+        printf("Usage: systemctl enable/disable <func>\n");
+        return -1;
+    }
+    if(strcmp(arg2,"PIDPrint")==0){
+        if(func_en==1){
+            config.isPIDPrint=1;
+        } else{
+            config.isPIDPrint=0;
+        }
+    }
+
+}
+int cmd_setSampleRate(char *args){
+    // paras
+    char *arg1 = strtok(NULL, " ");
+    if (arg1 == NULL)
+    {
+        printf("Usage: setSampleRate <rate> (Vol=Vin*rate)\n");
+        return 0;
+    }
+    float rate = atoff(arg1);
+    sampleRate=rate;
+    printf("sampleRate=%f\nVol=%.3f*Vin\n",sampleRate,sampleRate);
+}
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
-    V_cur = (float) ADC_Value[0] * 3.3f / 4096.0f;
-    duty = pid_process_o_Vol(&pid_o_Vol, V_set, V_cur, 98, 2);
+    V_cur = (float) ADC_Value[0] * 3.3f / 4096.0f *sampleRate;
+    duty = pid_process_o_Vol(&pid_o_Vol, V_set, V_cur, 95, 5);
     TIM2->CCR2 = ((float) (TIM2->ARR + 1)) * duty - 1.0f;
+}
+//空闲中断回调函数，参数Size为串口实际接收到数据字节数
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+    if(huart->Instance==USART1)
+    {
+        //把收到的一包数据通过串口回传
+        rx_data[Size]=0;
+        UART_Console(rx_data);
+        HAL_UART_Transmit(&huart1,rx_data,Size,0xff);
+
+
+        //再次开启空闲中断接收，不然只会接收一次数据
+        HAL_UARTEx_ReceiveToIdle_IT(&huart1,rx_data,1000);
+    }
 }
 /* USER CODE END 0 */
 
@@ -406,51 +521,53 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
   * @brief  The application entry point.
   * @retval int
   */
-int main(void) {
-    /* USER CODE BEGIN 1 */
+int main(void)
+{
+  /* USER CODE BEGIN 1 */
 
-    /* USER CODE END 1 */
+  /* USER CODE END 1 */
 
-    /* MCU Configuration--------------------------------------------------------*/
+  /* MCU Configuration--------------------------------------------------------*/
 
-    /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-    HAL_Init();
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
 
-    /* USER CODE BEGIN Init */
+  /* USER CODE BEGIN Init */
 
-    /* USER CODE END Init */
+  /* USER CODE END Init */
 
-    /* Configure the system clock */
-    SystemClock_Config();
+  /* Configure the system clock */
+  SystemClock_Config();
 
-    /* USER CODE BEGIN SysInit */
+  /* USER CODE BEGIN SysInit */
 
-    /* USER CODE END SysInit */
+  /* USER CODE END SysInit */
 
-    /* Initialize all configured peripherals */
-    MX_GPIO_Init();
-    MX_DMA_Init();
-    MX_SPI1_Init();
-    MX_USART1_UART_Init();
-    MX_ADC1_Init();
-    MX_TIM2_Init();
-    /* USER CODE BEGIN 2 */
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_SPI1_Init();
+  MX_USART1_UART_Init();
+  MX_ADC1_Init();
+  MX_TIM2_Init();
+  /* USER CODE BEGIN 2 */
     u8g2_Setup_ssd1306_128x64_noname_f(&u8g2, U8G2_R0, u8x8_byte_4wire_hw_spi, u8x8_stm32_gpio_and_delay);
     u8g2_InitDisplay(&u8g2);
     u8g2_SetPowerSave(&u8g2, 0);
     HAL_TIM_Base_Start_IT(&htim2);
     HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
     HAL_ADC_Start_DMA(&hadc1, (uint32_t *) ADC_Value, 1);
-    /* USER CODE END 2 */
+  /* USER CODE END 2 */
 
-    /* Infinite loop */
-    /* USER CODE BEGIN WHILE */
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
     HAL_GPIO_WritePin(check_GPIO_Port, check_Pin, 1);
+    HAL_UARTEx_ReceiveToIdle_IT(&huart1,rx_data,1000);
     while (1) {
         //HAL_UART_Transmit(&huart1,"hhh",3,HAL_MAX_DELAY);
-        /* USER CODE END WHILE */
+    /* USER CODE END WHILE */
 
-        /* USER CODE BEGIN 3 */
+    /* USER CODE BEGIN 3 */
         int keyboard = getKeyboardIndex();
 
         fsm_stateDirection:
@@ -488,56 +605,61 @@ int main(void) {
 
 
         display:
-        UART_printf(&huart1, "V=%f,%f,%.2f\n", V_set, V_cur, duty);
+        if(config.isPIDPrint) {
+            UART_printf(&huart1, "V=%f,%f,%.2f\n", V_set, V_cur, duty);
+        }
         char V_cur_buf[200];
         sprintf(V_cur_buf, "Vout:%.2fV", V_cur);
         frame(&u8g2, first, V_cur_buf, V_set, model);
 
 
     }
-    /* USER CODE END 3 */
+  /* USER CODE END 3 */
 }
 
 /**
   * @brief System Clock Configuration
   * @retval None
   */
-void SystemClock_Config(void) {
-    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-    /** Configure the main internal regulator output voltage
-    */
-    __HAL_RCC_PWR_CLK_ENABLE();
-    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
-    /** Initializes the RCC Oscillators according to the specified parameters
-    * in the RCC_OscInitTypeDef structure.
-    */
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-    RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-    RCC_OscInitStruct.PLL.PLLM = 25;
-    RCC_OscInitStruct.PLL.PLLN = 168;
-    RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-    RCC_OscInitStruct.PLL.PLLQ = 4;
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
-        Error_Handler();
-    }
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 25;
+  RCC_OscInitStruct.PLL.PLLN = 168;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
-    /** Initializes the CPU, AHB and APB buses clocks
-    */
-    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-                                  | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
-        Error_Handler();
-    }
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
 /* USER CODE BEGIN 4 */
@@ -677,13 +799,14 @@ uint8_t decode(uint16_t data, uint8_t pos) {
   * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
-void Error_Handler(void) {
-    /* USER CODE BEGIN Error_Handler_Debug */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
     /* User can add his own implementation to report the HAL error return state */
     __disable_irq();
     while (1) {
     }
-    /* USER CODE END Error_Handler_Debug */
+  /* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT

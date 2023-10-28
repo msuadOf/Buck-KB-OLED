@@ -48,11 +48,11 @@ else ()
     add_compile_options(-Og -g)
 endif ()
 
-include_directories(${includes} u8g2-master/)
+include_directories(${includes} u8g2-master/ uart_console/)
 
 add_definitions(${defines})
 
-file(GLOB_RECURSE SOURCES ${sources} "u8g2-master/*.*")
+file(GLOB_RECURSE SOURCES ${sources} "u8g2-master/*.*" "uart_console/*.*")
 
 set(LINKER_SCRIPT $${CMAKE_SOURCE_DIR}/${linkerScript})
 

@@ -32,6 +32,10 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+typedef  struct {
+    int isPIDPrint;
+    int isConsoleEnable;
+}config_t ;
 
 /* USER CODE END Includes */
 
